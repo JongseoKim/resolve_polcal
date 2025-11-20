@@ -1,0 +1,6 @@
+*.pickle
+*.png
+*.jpg
+*.ms
+__pycache__
+.ipynb_checkpoints/
