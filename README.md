@@ -10,6 +10,14 @@ Install dependencies: [nifty8](https://gitlab.mpcdf.mpg.de/ift/nifty), [ducc](ht
 
 Optional dependencies: mpi4py, configparser, python-casacore, h5py, matplotlib
 
+Instruction
+------------
+
+Download the example data (MOJAVE VLBA 3C 273 at 15 GHz):
+https://zenodo.org/records/17699222
+
+Run the example code with parallelization
+mpiexec -n 4 python3 VLBI_pol_imaging.py conf_polcal.cfg
 
 
 
