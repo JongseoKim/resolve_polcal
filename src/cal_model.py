@@ -477,36 +477,62 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
         altitude_arr.append(np.arcsin(np.sin(np.radians(source_DEC)) * np.sin(np.radians(station_lat_arr[ii])) + np.cos(
             np.radians(source_DEC)) * np.cos(np.radians(station_lat_arr[ii])) * np.cos(hangle_arr[ii])))
 
-    f_el_arr = np.zeros(len(uantennas))  #TODO get f_el_arr from obs
+    azimuth_arr = []
+    for ii in range(len(uantennas)):
+        azimuth_arr.append(np.arctan2(
+            np.sin(hangle_arr[ii]) * np.cos(np.radians(source_DEC)),
+            np.sin(np.radians(source_DEC)) * np.cos(np.radians(station_lat_arr[ii])) -
+            np.cos(np.radians(source_DEC)) * np.sin(np.radians(station_lat_arr[ii])) * np.cos(hangle_arr[ii])
+        ))
+
+    f_el_arr = np.zeros(len(uantennas))
     f_par_arr = np.zeros(len(uantennas))
-    phi_off_arr = np.zeros(len(uantennas)) #TODO get phi_off_arr from obs
+    f_az_arr = np.zeros(len(uantennas))
+    phi_off_arr = np.zeros(len(uantennas))
 
     for ii in range(len(uantennas)):
         if antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ':
             f_par_arr[ii] = 1
-            phi_off_arr[ii] = 0
+        elif antenna_mount_type[list(uantennas)[ii]] == 'EQUATORIAL':
+            pass
         elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+NASMYTH-R':
-
             f_el_arr[ii] = 1
             f_par_arr[ii] = 1
-            phi_off_arr[ii] = 0
         elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+NASMYTH-L':
             f_el_arr[ii] = -1
             f_par_arr[ii] = 1
             if station_names[list(uantennas)[ii]] == "SW":
                 phi_off_arr[ii] = np.deg2rad(45)
-            else:
-                phi_off_arr[ii] = 0
+        elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+BWG-R':
+            f_el_arr[ii] = 1
+            f_par_arr[ii] = 1
+            f_az_arr[ii] = -1
+        elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+BWG-L':
+            f_el_arr[ii] = -1
+            f_par_arr[ii] = 1
+            f_az_arr[ii] = 1
+        elif antenna_mount_type[list(uantennas)[ii]] == 'X-Y':
+            pass
         else:
-            raise NotImplementedError("The antenna mount type is not implemented!")
+            raise NotImplementedError(f"The antenna mount '{antenna_mount_type[list(uantennas)[ii]]}' type is not implemented!")
 
     field_rotation_angle_arr = np.zeros([len(uantennas), len(time_array), nfreq])
 
-    for ii in range(len(uantennas)): # field rotation angle phi = f_el * theta_el + f_par * parang + phi_off
+    for ii in range(len(uantennas)):
         for jj in range(len(time_array)):
             for kk in range(nfreq):
-                field_rotation_angle_arr[ii, jj, kk] = f_el_arr[ii] * altitude_arr[ii][jj] + f_par_arr[ii] * parang_arr[ii][
-                    jj] + phi_off_arr[ii]
+                if antenna_mount_type[list(uantennas)[ii]] == 'X-Y':
+                    field_rotation_angle_arr[ii, jj, kk] = np.arctan2(
+                        -np.cos(hangle_arr[ii][jj]),
+                        -np.sin(hangle_arr[ii][jj]) * np.sin(np.radians(source_DEC))
+                    )
+                else:
+                    field_rotation_angle_arr[ii, jj, kk] = (
+                        f_el_arr[ii] * altitude_arr[ii][jj] +
+                        f_par_arr[ii] * parang_arr[ii][jj] +
+                        f_az_arr[ii] * azimuth_arr[ii][jj] +
+                        phi_off_arr[ii]
+                    )
 
     domain = ift.DomainTuple.make([ift.UnstructuredDomain(len(uantennas)), time_domain, ift.UnstructuredDomain(nfreq)])
     field_rotation_angle_field = ift.Field.from_raw(domain, field_rotation_angle_arr) #unit: [rad]
