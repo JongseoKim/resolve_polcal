@@ -89,8 +89,22 @@ do_wgridding = cfg["base"].getboolean("do_wgridding")
 epsilon = cfg["base"].getfloat("epsilon")
 gaincal = cfg["gain_logamplitude"].getboolean("gaincal")
 Const_Dterm = cfg["Dterm_logamplitude"]["Const_Dterm"]
+reference_antenna_index = cfg["gain_phase"].get("reference_antenna_index")
 
-logamp_RCP_, logamp_LCP_, phase_RCP_, phase_LCP_ = gain_ops(cfg, obs, gaincal=gaincal)
+reference_antenna_index = reference_antenna_index.strip()
+if reference_antenna_index == "None":
+    reference_antenna_index = None
+else:
+    reference_antenna_index = cfg["gain_phase"].getint("reference_antenna_index")
+
+
+logamp_RCP_, logamp_LCP_, phase_RCP_, phase_LCP_ = gain_ops(
+    cfg,
+    obs,
+    gaincal=gaincal,
+    zero_phase_rcp_antenna_index=reference_antenna_index,
+    zero_phase_lcp_antenna_index=reference_antenna_index,
+)
 
 if Const_Dterm == "False":
     Dterm_logamp_, Dterm_phase_ = Dterm_ops(cfg, obs)

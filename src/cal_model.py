@@ -41,6 +41,7 @@ def built_cal_model(config, obs, single_gain=False, tmin=None, tmax=None, gain_p
     zero_padding_factor = 2
 
     uantennas = rve.unique_antennas(obs)
+    nfreq = obs.nfreq
     antenna_dct = {aa: ii for ii, aa in enumerate(uantennas)}
     if tmin==None and tmax==None:
         tmin, tmax = rve.tmin_tmax(obs)
@@ -48,8 +49,9 @@ def built_cal_model(config, obs, single_gain=False, tmin=None, tmax=None, gain_p
     time_domain = ift.RGSpace(
         ducc0.fft.good_size(int(zero_padding_factor * (tmax - tmin) / solint)), solint
     )
+    
+    total_N = 2* len(uantennas) * nfreq
 
-    total_N = 2 * len(uantennas)
     if single_gain==True:
         total_N = len(uantennas)
     dofdex_phase = dofdex_or_none(config[gain_phase_config_name], f"diff_correlation_kernels", total_N)
@@ -183,12 +185,36 @@ def amp_calibration_op_correlated(config, obs, gain_config_name="gain_logamplitu
     return cop, logamp
 
 
-def gain_ops(config, obs, gaincal=True, tmin=None, tmax=None):
+def _fix_phase_reference_antenna(phase_op, nants, time_domain, fdom, antenna_index):
+    reshaper = ift.DomainChangerAndReshaper(
+        phase_op.target,
+        (
+            ift.UnstructuredDomain(nants),
+            time_domain,
+            fdom
+        )
+    )
+    mask = np.ones((nants, time_domain.size, fdom.size))
+    mask[antenna_index, :, :] = 0.0
+    mask_field = ift.Field.from_raw(domain=reshaper.target, arr=mask)
+    return reshaper.adjoint @ (ift.DiagonalOperator(mask_field) @ (reshaper @ phase_op))
+
+
+def gain_ops(
+    config,
+    obs,
+    gaincal=True,
+    tmin=None,
+    tmax=None,
+    zero_phase_lcp_antenna_index=None,
+    zero_phase_rcp_antenna_index=None,
+):
     solint = config["gain_phase"].getint("solution_interval")
     zero_padding_factor = 2
     uantennas = rve.unique_antennas(obs)
     antenna_dct = {aa: ii for ii, aa in enumerate(uantennas)}
-    nfreq = obs.nfreq
+    _, _, fdom = obs.vis.domain
+    nfreq = fdom.size
     if tmin==None and tmax==None:
         tmin, tmax = rve.tmin_tmax(obs)
     assert tmin == 0.0
@@ -224,6 +250,28 @@ def gain_ops(config, obs, gaincal=True, tmin=None, tmax=None):
     if uncorrelated_gain_phase == "True":
         phase_RCP_ = phase_amp * np.pi * ift.FieldAdapter(phase_RCP_.target, "gain_phase_RCP_")
         phase_LCP_ = phase_amp * np.pi * ift.FieldAdapter(phase_LCP_.target, "gain_phase_LCP_")
+
+    if zero_phase_rcp_antenna_index is not None:
+        if not 0 <= zero_phase_rcp_antenna_index < len(uantennas):
+            raise ValueError("zero_phase_rcp_antenna_index out of range")
+        phase_RCP_ = _fix_phase_reference_antenna(
+            phase_RCP_,
+            len(uantennas),
+            time_domain,
+            fdom,
+            zero_phase_rcp_antenna_index,
+        )
+
+    if zero_phase_lcp_antenna_index is not None:
+        if not 0 <= zero_phase_lcp_antenna_index < len(uantennas):
+            raise ValueError("zero_phase_lcp_antenna_index out of range")
+        phase_LCP_ = _fix_phase_reference_antenna(
+            phase_LCP_,
+            len(uantennas),
+            time_domain,
+            fdom,
+            zero_phase_lcp_antenna_index,
+        )
 
     logamp_RCP_ = cfm_from_cfg(
         config["gain_logamplitude"],
@@ -482,23 +530,28 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
     phi_off_arr = np.zeros(len(uantennas)) #TODO get phi_off_arr from obs
 
     for ii in range(len(uantennas)):
-        if antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ':
+        antenna_index = list(uantennas)[ii]
+        mount_type = str(antenna_mount_type[antenna_index]).strip().upper()
+        if mount_type == 'ALT-AZ':
             f_par_arr[ii] = 1
             phi_off_arr[ii] = 0
-        elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+NASMYTH-R':
+        elif mount_type == 'ALT-AZ+NASMYTH-R':
 
             f_el_arr[ii] = 1
             f_par_arr[ii] = 1
             phi_off_arr[ii] = 0
-        elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+NASMYTH-L':
+        elif mount_type == 'ALT-AZ+NASMYTH-L':
             f_el_arr[ii] = -1
             f_par_arr[ii] = 1
-            if station_names[list(uantennas)[ii]] == "SW":
+            if station_names[antenna_index] == "SW":
                 phi_off_arr[ii] = np.deg2rad(45)
             else:
                 phi_off_arr[ii] = 0
         else:
-            raise NotImplementedError("The antenna mount type is not implemented!")
+            raise NotImplementedError(
+                f"The antenna mount type {antenna_mount_type[antenna_index]!r} "
+                f"is not implemented for station {station_names[antenna_index]!r}!"
+            )
 
     field_rotation_angle_arr = np.zeros([len(uantennas), len(time_array), nfreq])
 
