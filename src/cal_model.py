@@ -530,23 +530,28 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
     phi_off_arr = np.zeros(len(uantennas)) #TODO get phi_off_arr from obs
 
     for ii in range(len(uantennas)):
-        if antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ':
+        antenna_index = list(uantennas)[ii]
+        mount_type = str(antenna_mount_type[antenna_index]).strip().upper()
+        if mount_type == 'ALT-AZ':
             f_par_arr[ii] = 1
             phi_off_arr[ii] = 0
-        elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+NASMYTH-R':
+        elif mount_type == 'ALT-AZ+NASMYTH-R':
 
             f_el_arr[ii] = 1
             f_par_arr[ii] = 1
             phi_off_arr[ii] = 0
-        elif antenna_mount_type[list(uantennas)[ii]] == 'ALT-AZ+NASMYTH-L':
+        elif mount_type == 'ALT-AZ+NASMYTH-L':
             f_el_arr[ii] = -1
             f_par_arr[ii] = 1
-            if station_names[list(uantennas)[ii]] == "SW":
+            if station_names[antenna_index] == "SW":
                 phi_off_arr[ii] = np.deg2rad(45)
             else:
                 phi_off_arr[ii] = 0
         else:
-            raise NotImplementedError("The antenna mount type is not implemented!")
+            raise NotImplementedError(
+                f"The antenna mount type {antenna_mount_type[antenna_index]!r} "
+                f"is not implemented for station {station_names[antenna_index]!r}!"
+            )
 
     field_rotation_angle_arr = np.zeros([len(uantennas), len(time_array), nfreq])
 
