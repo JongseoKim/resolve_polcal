@@ -200,11 +200,11 @@ field_rotation_angle_field = get_field_rotation_angle_field(cfg, obs, BeginTime_
 
 '''
 ### Field rotation plots
-Field_rotation_prior = Field_rotation_i_(ift.Field.from_raw(Field_rotation_i_.domain, np.zeros(Field_rotation_i_.domain.shape)))
+Field_rotation_prior = field_rotation_angle_field
 solint = cfg["gain_phase"].getint("solution_interval")
-time_arr = np.arange(0, solint*Field_rotation_i_.domain.shape[1], solint)
-for ii in range(Field_rotation_i_.domain.shape[0]):
-    plt.scatter(time_arr, np.rad2deg(Field_rotation_prior.val[ii]))
+time_arr = np.arange(0, solint*Field_rotation_prior.domain.shape[1], solint)
+for ii in range(Field_rotation_prior.domain.shape[0]):
+    plt.scatter(time_arr, np.rad2deg(Field_rotation_prior.val[ii, :, 0]))
     plt.scatter(obs.time, np.zeros(obs.time.shape))
     plt.savefig(f"Field_rotation_angle_{ii}_{station_table[list(uantennas)[ii]]}.png")
     plt.close()
