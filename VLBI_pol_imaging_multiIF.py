@@ -19,6 +19,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import configparser
 import sys
+from resolve.data import ms_import as _ms_import
+
 
 from src.sky_model import sky_model_diffuse
 from src.cal_model import gain_ops, Dterm_ops, Const_Dterm_ops, Const_Dterm_ops_normal, get_field_rotation_angle_field, pol_cal_op_RR, pol_cal_op_RL, pol_cal_op_LR, pol_cal_op_LL
@@ -33,6 +35,57 @@ try:
 except ImportError:
     comm = None
     master = True
+
+
+def _import_spw_on_full_row_grid(ms, spectral_window, polarizations):
+    """Import one SPW without dropping fully flagged/zero-weight rows."""
+    original_first_pass = _ms_import._first_pass
+
+    def first_pass_keep_flagged_rows(ms, field, spw, channels, pol_indices,
+                                     pol_summation, ignore_flags):
+        # _first_pass normally removes both fully flagged rows and rows whose
+        # weights are all zero. For multi-IF concatenation the row grid must
+        # instead be determined solely by field and SPW. The second pass still
+        # honors flags/weights, so unusable samples remain present with weight
+        # zero and do not contribute to the likelihood.
+        with _ms_import.ms_table(ms) as table:
+            active_rows = np.logical_and(
+                table.getcol("FIELD_ID") == field,
+                table.getcol("DATA_DESC_ID") == spw,
+            )
+        active_channels = np.zeros(
+            _ms_import._ms_nchannels(ms, spw), dtype=bool
+        )
+        active_channels[channels] = True
+        return active_rows, active_channels
+
+    _ms_import._first_pass = first_pass_keep_flagged_rows
+    try:
+        return rve.ms2observations(
+            ms, "DATA", True, spectral_window, polarizations,
+            ignore_flags=False,
+        )[0]
+    finally:
+        _ms_import._first_pass = original_first_pass
+
+
+def _assert_matching_row_grids(observations):
+    reference = observations[0]._antpos
+    for spw, observation in enumerate(observations[1:], start=1):
+        candidate = observation._antpos
+        matches = (
+            len(candidate) == len(reference)
+            and np.array_equal(candidate.ant1, reference.ant1)
+            and np.array_equal(candidate.ant2, reference.ant2)
+            and np.array_equal(candidate.time, reference.time)
+            and np.array_equal(candidate.uvw, reference.uvw)
+        )
+        if not matches:
+            raise RuntimeError(
+                f"Spectral window {spw} ({len(candidate)} rows) does not have "
+                f"the same antenna/time/UVW row grid as spectral window 0 "
+                f"({len(reference)} rows); channel concatenation is unsafe."
+            )
 
 
 _, cfg_file = sys.argv
@@ -65,7 +118,9 @@ vis_list = []
 weight_list = []
 freq_list = []
 for ii in range(total_number_of_spectral_window):
-    obs_list.append(rve.ms2observations(data_path, "DATA", True, ii, polarizations, ignore_flags=True)[0])
+    obs_list.append(_import_spw_on_full_row_grid(data_path, ii, polarizations))
+
+_assert_matching_row_grids(obs_list)
 
 for ii in range(total_number_of_spectral_window):
     vis_list.append(obs_list[ii].vis.val)
