@@ -22,11 +22,62 @@ from matplotlib import colors, cm
 import configparser
 import sys
 import h5py
+from resolve.data import ms_import as _ms_import
 
 from src.sky_model import sky_model_diffuse
 from src.cal_model import gain_ops, Dterm_ops, Const_Dterm_ops, get_field_rotation_angle_field, pol_cal_op_RR, pol_cal_op_RL, pol_cal_op_LR, pol_cal_op_LL
 from src.likelihoods import likelihood_pol, PolarizationLikelihood, PolarizationLikelihood_combined
 from src.utilities import get_BeginTime_UTC
+
+
+def _import_spw_on_full_row_grid(ms, spectral_window, polarizations):
+    """Import one SPW without dropping fully flagged/zero-weight rows."""
+    original_first_pass = _ms_import._first_pass
+
+    def first_pass_keep_flagged_rows(ms, field, spw, channels, pol_indices,
+                                     pol_summation, ignore_flags):
+        # Multi-IF concatenation requires every SPW to retain the same row
+        # grid. Flags are still honored below, so unusable samples get zero
+        # weight and do not contribute to subsequent calculations.
+        with _ms_import.ms_table(ms) as table:
+            active_rows = np.logical_and(
+                table.getcol("FIELD_ID") == field,
+                table.getcol("DATA_DESC_ID") == spw,
+            )
+        active_channels = np.zeros(
+            _ms_import._ms_nchannels(ms, spw), dtype=bool
+        )
+        active_channels[channels] = True
+        return active_rows, active_channels
+
+    _ms_import._first_pass = first_pass_keep_flagged_rows
+    try:
+        return rve.ms2observations(
+            ms, "DATA", True, spectral_window, polarizations,
+            ignore_flags=False,
+        )[0]
+    finally:
+        _ms_import._first_pass = original_first_pass
+
+
+def _assert_matching_row_grids(observations):
+    reference = observations[0]._antpos
+    for spw, observation in enumerate(observations[1:], start=1):
+        candidate = observation._antpos
+        matches = (
+            len(candidate) == len(reference)
+            and np.array_equal(candidate.ant1, reference.ant1)
+            and np.array_equal(candidate.ant2, reference.ant2)
+            and np.array_equal(candidate.time, reference.time)
+            and np.array_equal(candidate.uvw, reference.uvw)
+        )
+        if not matches:
+            raise RuntimeError(
+                f"Spectral window {spw} ({len(candidate)} rows) does not have "
+                f"the same antenna/time/UVW row grid as spectral window 0 "
+                f"({len(reference)} rows); channel concatenation is unsafe."
+            )
+
 
 _, cfg_file = sys.argv
 cfg = configparser.ConfigParser(allow_no_value=True)
@@ -54,7 +105,9 @@ vis_list = []
 weight_list = []
 freq_list = []
 for ii in range(total_number_of_spectral_window):
-    obs_list.append(rve.ms2observations(data_path, "DATA", True, ii, polarizations, ignore_flags=True)[0])
+    obs_list.append(_import_spw_on_full_row_grid(data_path, ii, polarizations))
+
+_assert_matching_row_grids(obs_list)
 
 for ii in range(total_number_of_spectral_window):
     vis_list.append(obs_list[ii].vis.val)
@@ -412,7 +465,7 @@ with h5py.File(f"{output_directory}/sky/last.hdf5", 'r') as hdf:
     else:
         sky_samplelist = []
         sky_arraylist = []
-        for ii in np.arange(np.array(hdf["samples"]).size):
+        for ii in range(len(hdf["samples"])):
             arr_sample = hdf['samples'][f'{ii}']
             sky_array = np.array(arr_sample)
 
@@ -724,8 +777,8 @@ with h5py.File(f"{output_directory}/logamp_RCP/last.hdf5", "r") as hdf:
 
     amp_samples_list = []
 
-    for ii in np.arange(np.array(hdf["samples"]).size):
-        amp_sample = np.exp(np.array(hdf["samples"][f"{ii}"]))
+    for ii in range(len(hdf["samples"])):
+        amp_sample = np.exp(hdf["samples"][f"{ii}"][()])
         amp_samples_list.append(amp_sample)
 
     amp_samples_mean = np.mean(amp_samples_list, axis=0)
@@ -766,8 +819,8 @@ with h5py.File(f"{output_directory}/logamp_LCP/last.hdf5", "r") as hdf:
 
     amp_samples_list = []
 
-    for ii in np.arange(np.array(hdf["samples"]).size):
-        amp_sample = np.exp(np.array(hdf["samples"][f"{ii}"]))
+    for ii in range(len(hdf["samples"])):
+        amp_sample = np.exp(hdf["samples"][f"{ii}"][()])
         amp_samples_list.append(amp_sample)
 
     amp_samples_mean = np.mean(amp_samples_list, axis=0)
@@ -810,8 +863,8 @@ with h5py.File(f"{output_directory}/phase_RCP/last.hdf5", "r") as hdf:
 
     phase_samples_list = []
 
-    for ii in np.arange(np.array(hdf["samples"]).size):
-        phase_sample = np.array(hdf["samples"][f"{ii}"])
+    for ii in range(len(hdf["samples"])):
+        phase_sample = hdf["samples"][f"{ii}"][()]
         phase_samples_list.append(phase_sample)
 
     phase_samples_mean = np.mean(phase_samples_list, axis=0)
@@ -860,8 +913,8 @@ with h5py.File(f"{output_directory}/phase_LCP/last.hdf5", "r") as hdf:
 
     phase_samples_list = []
 
-    for ii in np.arange(np.array(hdf["samples"]).size):
-        phase_sample = np.array(hdf["samples"][f"{ii}"])
+    for ii in range(len(hdf["samples"])):
+        phase_sample = hdf["samples"][f"{ii}"][()]
         phase_samples_list.append(phase_sample)
 
     phase_samples_mean = np.mean(phase_samples_list, axis=0)
@@ -926,12 +979,53 @@ Dterm_RCP_std = np.std(Dterm_RCP_samples, axis=0)
 Dterm_LCP_std = np.std(Dterm_LCP_samples, axis=0)
 
 
-#TODO check how to calculate std of complex number
+def save_dterm_summary(filename):
+    with open(filename, "w", encoding="utf-8") as stream:
+        stream.write(
+            "station\tantenna_id\tIF\tpolarization\treal\timag\t"
+            "magnitude_percent\tstd_percent\n"
+        )
+        for polarization, means, stds in (
+            ("RCP", Dterm_RCP_mean, Dterm_RCP_std),
+            ("LCP", Dterm_LCP_mean, Dterm_LCP_std),
+        ):
+            for ii, antenna_id in enumerate(uantennas):
+                station = station_table[antenna_id]
+                for jj in range(means.shape[1]):
+                    mean = means[ii, jj]
+                    stream.write(
+                        f"{station}\t{antenna_id}\t{jj}\t{polarization}\t"
+                        f"{mean.real:.10e}\t{mean.imag:.10e}\t"
+                        f"{100*abs(mean):.10e}\t{100*stds[ii, jj]:.10e}\n"
+                    )
+
+
+dterm_summary_filename = (
+    f"{output_directory}/{output_directory}_Dterms.txt"
+)
+save_dterm_summary(dterm_summary_filename)
+print(f"Saved results as {dterm_summary_filename}.")
+
+
 for ii in range(len(uantennas)):
-    print(f'{station_table[list(uantennas)[ii]]} RCP Dterm : {100*abs(Dterm_RCP_mean[ii]):.3f} +- {100*Dterm_RCP_std[ii]:.3f}% ({Dterm_RCP_mean[ii]:.3f})')
+    station = station_table[list(uantennas)[ii]]
+    for jj in range(Dterm_RCP_mean.shape[1]):
+        mean = Dterm_RCP_mean[ii, jj]
+        std = Dterm_RCP_std[ii, jj]
+        print(
+            f'{station} IF{jj} RCP Dterm : {100*abs(mean):.3f} '
+            f'+- {100*std:.3f}% ({mean:.3f})'
+        )
 print()
 for ii in range(len(uantennas)):
-    print(f'{station_table[list(uantennas)[ii]]} LCP Dterm : {100*abs(Dterm_LCP_mean[ii]):.3f} +- {100*Dterm_LCP_std[ii]:.3f}% ({Dterm_LCP_mean[ii]:.3f})')
+    station = station_table[list(uantennas)[ii]]
+    for jj in range(Dterm_LCP_mean.shape[1]):
+        mean = Dterm_LCP_mean[ii, jj]
+        std = Dterm_LCP_std[ii, jj]
+        print(
+            f'{station} IF{jj} LCP Dterm : {100*abs(mean):.3f} '
+            f'+- {100*std:.3f}% ({mean:.3f})'
+        )
 
 
 ### Dterm Plotter
@@ -1005,8 +1099,8 @@ with h5py.File(f"{output_directory}/Dterm_logamp/last.hdf5", "r") as hdf:
 
     amp_samples_list = []
 
-    for ii in np.arange(np.array(hdf["samples"]).size):
-        amp_sample = np.exp(np.array(hdf["samples"][f"{ii}"]))
+    for ii in range(len(hdf["samples"])):
+        amp_sample = np.exp(hdf["samples"][f"{ii}"][()])
         amp_samples_list.append(amp_sample)
 
     amp_samples_mean = np.mean(amp_samples_list, axis=0)
@@ -1072,8 +1166,8 @@ with h5py.File(f"{output_directory}/Dterm_phase/last.hdf5", "r") as hdf:
 
     phase_samples_list = []
 
-    for ii in np.arange(np.array(hdf["samples"]).size):
-        phase_sample = np.array(hdf["samples"][f"{ii}"])
+    for ii in range(len(hdf["samples"])):
+        phase_sample = hdf["samples"][f"{ii}"][()]
         phase_samples_list.append(phase_sample)
 
     phase_samples_mean = np.mean(phase_samples_list, axis=0)
