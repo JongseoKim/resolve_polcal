@@ -512,22 +512,33 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
     hangle_arr = []
     parang_arr = []
     altitude_arr = []
+    azimuth_arr = []
 
     for ii in range(len(uantennas)):
         hangle_arr.append(
             np.radians(gst * 15. + station_long_arr[ii] - source_RA))  # hour angle = GST + station_long - source_RA, [rad]
     for ii in range(len(uantennas)):
         parang_arr.append(np.arctan2((np.sin(hangle_arr[ii]) * np.cos(np.radians(station_lat_arr[ii]))),
-                                     (np.sin(np.radians(station_lat_arr[ii]) * np.cos(np.radians(source_DEC)) - np.cos(
+                                     (np.sin(np.radians(station_lat_arr[ii])) * np.cos(np.radians(source_DEC)) - np.cos(
                                          np.radians(station_lat_arr[ii])) * np.sin(np.radians(source_DEC)) * np.cos(
-                                         hangle_arr[ii])))))
+                                         hangle_arr[ii]))))
     for ii in range(len(uantennas)):
         altitude_arr.append(np.arcsin(np.sin(np.radians(source_DEC)) * np.sin(np.radians(station_lat_arr[ii])) + np.cos(
             np.radians(source_DEC)) * np.cos(np.radians(station_lat_arr[ii])) * np.cos(hangle_arr[ii])))
 
-    f_el_arr = np.zeros(len(uantennas))  #TODO get f_el_arr from obs
+    for ii in range(len(uantennas)):
+        azimuth = np.arctan2(
+            -1 * np.sin(hangle_arr[ii]) * np.cos(np.radians(source_DEC)),
+            np.sin(np.radians(source_DEC)) * np.cos(np.radians(station_lat_arr[ii])) -
+            np.cos(np.radians(source_DEC)) * np.sin(np.radians(station_lat_arr[ii])) * np.cos(hangle_arr[ii])
+        )
+        azimuth_ = np.mod(azimuth, 2 * np.pi)
+        azimuth_arr.append(azimuth_)
+
+    f_el_arr = np.zeros(len(uantennas))
     f_par_arr = np.zeros(len(uantennas))
-    phi_off_arr = np.zeros(len(uantennas)) #TODO get phi_off_arr from obs
+    f_az_arr = np.zeros(len(uantennas))
+    phi_off_arr = np.zeros(len(uantennas))
 
     for ii in range(len(uantennas)):
         antenna_index = list(uantennas)[ii]
@@ -535,8 +546,9 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
         if mount_type == 'ALT-AZ':
             f_par_arr[ii] = 1
             phi_off_arr[ii] = 0
+        elif mount_type == 'EQUATORIAL':
+            pass
         elif mount_type == 'ALT-AZ+NASMYTH-R':
-
             f_el_arr[ii] = 1
             f_par_arr[ii] = 1
             phi_off_arr[ii] = 0
@@ -547,6 +559,16 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
                 phi_off_arr[ii] = np.deg2rad(45)
             else:
                 phi_off_arr[ii] = 0
+        elif mount_type == 'ALT-AZ+BWG-R':
+            f_el_arr[ii] = 1
+            f_par_arr[ii] = 1
+            f_az_arr[ii] = -1
+        elif mount_type == 'ALT-AZ+BWG-L':
+            f_el_arr[ii] = -1
+            f_par_arr[ii] = 1
+            f_az_arr[ii] = 1
+        elif mount_type == 'X-Y':
+            pass
         else:
             raise NotImplementedError(
                 f"The antenna mount type {antenna_mount_type[antenna_index]!r} "
@@ -555,11 +577,26 @@ def get_field_rotation_angle_field(config, obs, BeginTime_UTC_list, timestamp, a
 
     field_rotation_angle_arr = np.zeros([len(uantennas), len(time_array), nfreq])
 
-    for ii in range(len(uantennas)): # field rotation angle phi = f_el * theta_el + f_par * parang + phi_off
-        for jj in range(len(time_array)):
-            for kk in range(nfreq):
-                field_rotation_angle_arr[ii, jj, kk] = f_el_arr[ii] * altitude_arr[ii][jj] + f_par_arr[ii] * parang_arr[ii][
-                    jj] + phi_off_arr[ii]
+    # Field rotation angle:
+    # phi = f_el * theta_el + f_par * parang + f_az * azimuth + phi_off
+    for ii in range(len(uantennas)):
+        antenna_index = list(uantennas)[ii]
+        mount_type = str(antenna_mount_type[antenna_index]).strip().upper()
+
+        if mount_type == 'X-Y':  # east-west-axis mount
+            angle = np.arctan2(
+                np.cos(hangle_arr[ii]),
+                np.sin(hangle_arr[ii]) * np.sin(np.radians(source_DEC))
+            )
+        else:
+            angle = (
+                f_el_arr[ii] * altitude_arr[ii] +
+                f_par_arr[ii] * parang_arr[ii] +
+                f_az_arr[ii] * azimuth_arr[ii] +
+                phi_off_arr[ii]
+            )
+
+        field_rotation_angle_arr[ii, :, :] = angle[:, np.newaxis]
 
     domain = ift.DomainTuple.make([ift.UnstructuredDomain(len(uantennas)), time_domain, ift.UnstructuredDomain(nfreq)])
     field_rotation_angle_field = ift.Field.from_raw(domain, field_rotation_angle_arr) #unit: [rad]
